@@ -1,0 +1,261 @@
+<title>Unravel</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Instrument+Sans:wght@400;500;600&display=swap">
+<style>
+  /* Single dark world on purpose: the canvas is the product, chrome stays out of the way. */
+  :root {
+    color-scheme: dark;
+    --ground: #04060a;
+    --ink: #d9e2e8;
+    --ink-dim: rgba(217, 226, 232, 0.62);
+    --ink-faint: rgba(217, 226, 232, 0.38);
+    --line: rgba(217, 226, 232, 0.16);
+    --glass: rgba(8, 11, 18, 0.62);
+    --accent: #ff8fb1;
+    --sans: "Instrument Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+    --mono: "IBM Plex Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  }
+  [hidden] { display: none !important; }
+  html, body { height: 100%; }
+  body {
+    background: var(--ground); color: var(--ink);
+    font: 13px/1.4 var(--sans); overflow: hidden; -webkit-font-smoothing: antialiased;
+  }
+  #stage { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; cursor: crosshair; }
+  #stage.orbiting { cursor: grabbing; }
+
+  .chrome { position: fixed; z-index: 2; pointer-events: none; transition: opacity .25s ease; }
+  .chrome > * { pointer-events: auto; }
+  body.ui-hidden .chrome { opacity: 0; }
+  body.ui-hidden .chrome > * { pointer-events: none; }
+
+  /* ---- top-left: name, hint, chips */
+  #top {
+    top: 0; left: 0;
+    padding: calc(env(safe-area-inset-top, 0px) + 16px) 16px 0;
+    display: flex; flex-direction: column; gap: 10px; align-items: flex-start; max-width: 520px;
+  }
+  .title { display: flex; align-items: baseline; gap: 10px; }
+  .title h1 { margin: 0; font: 600 20px/1 var(--sans); letter-spacing: -.01em; color: var(--ink); }
+  .title span { font: 500 10px/1 var(--mono); letter-spacing: .14em; text-transform: uppercase; color: var(--ink-faint); }
+  #hint { margin: 0; max-width: 48ch; color: var(--ink-dim); text-wrap: balance; }
+  #hint b { color: var(--ink); font-weight: 500; }
+  #options { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+  .chips { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .chips-label { font: 500 10px/1 var(--mono); letter-spacing: .12em; text-transform: uppercase; color: var(--ink-faint); min-width: 7ch; }
+  .chip {
+    appearance: none; border: 1px solid var(--line); background: var(--glass); color: var(--ink-dim);
+    font: 400 12px/1 var(--mono); padding: 6px 9px; border-radius: 6px; cursor: pointer;
+  }
+  .chip:hover { color: var(--ink); }
+  .chip[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
+  /* the shape in use while Cycle is selected: filled, quieter than the pressed chip */
+  .chip.current { color: var(--ink); border-color: rgba(217, 226, 232, .38); background: rgba(217, 226, 232, .12); }
+  .chip.current::before { content: "●"; color: var(--accent); margin-right: 6px; font-size: 9px; vertical-align: 1px; }
+
+  /* ---- bottom: perf readout (left), controls (right) */
+  #bottom {
+    left: 0; right: 0; bottom: 0;
+    padding: 0 16px calc(env(safe-area-inset-bottom, 0px) + 14px);
+    display: flex; flex-wrap: nowrap; gap: 12px 18px; align-items: flex-end; justify-content: space-between;
+  }
+  #perf {
+    flex: 1 1 auto; min-width: 0;
+    display: flex; flex-wrap: wrap; gap: 6px 16px; align-items: baseline;
+    font: 400 12px/1.3 var(--mono); color: var(--ink-dim); font-variant-numeric: tabular-nums;
+  }
+  #perf .v { color: var(--ink); }
+  #perf .backend { color: var(--accent); letter-spacing: .04em; }
+  .stat { display: inline-flex; gap: 6px; align-items: baseline; }
+  .stat .k { color: var(--ink-faint); text-transform: uppercase; font-size: 10px; letter-spacing: .12em; }
+  .count { display: inline-flex; gap: 4px; align-items: center; }
+  .btn {
+    appearance: none; border: 1px solid var(--line); background: var(--glass); color: var(--ink);
+    font: 500 12px/1 var(--mono); min-width: 26px; height: 24px; padding: 0 8px; border-radius: 6px; cursor: pointer;
+  }
+  .btn:hover { border-color: rgba(217, 226, 232, .32); }
+  .btn:disabled { color: var(--ink-faint); border-color: rgba(217, 226, 232, .07); background: transparent; cursor: not-allowed; }
+  .btn:disabled:hover { border-color: rgba(217, 226, 232, .07); }
+  .btn[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
+  #readout { flex-basis: 100%; color: var(--ink-dim); }
+  .debug { flex-basis: 100%; font: 400 11px/1.6 var(--mono); color: var(--ink-faint); }
+  .debug a { color: var(--ink-dim); text-decoration: none; border-bottom: 1px dotted var(--line); }
+  .debug a:hover { color: var(--ink); }
+  .debug a[aria-current="page"] { color: var(--accent); border-bottom-color: var(--accent); }
+  #keys { flex-basis: 100%; font: 400 11px/1.6 var(--mono); color: var(--ink-faint); }
+  #keys kbd { color: var(--ink-dim); font: inherit; }
+
+  /* ---- control panel */
+  .panel {
+    flex: none; width: 212px; padding: 12px; border-radius: 12px;
+    border: 1px solid var(--line); background: var(--glass);
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    display: flex; flex-direction: column; gap: 10px;
+  }
+  .panel h2 {
+    margin: 0; display: flex; justify-content: space-between; align-items: baseline;
+    font: 600 12px/1 var(--sans); color: var(--ink); letter-spacing: .01em;
+  }
+  .panel h2 small { font: 400 11px/1 var(--sans); color: var(--ink-faint); }
+  .panel .link { appearance: none; border: 0; background: none; padding: 0; color: var(--ink-faint); font: 400 11px/1 var(--mono); cursor: pointer; }
+  .panel .link:hover { color: var(--accent); }
+  .padwrap { display: grid; grid-template-columns: 14px 1fr; grid-template-rows: 1fr 14px; gap: 4px; }
+  #pad-y { grid-column: 1; grid-row: 1; writing-mode: vertical-rl; transform: rotate(180deg); text-align: center; }
+  #pad-x { grid-column: 2; grid-row: 2; text-align: center; }
+  #pad-x, #pad-y { font: 400 10px/14px var(--mono); color: var(--ink-faint); letter-spacing: .04em; }
+  #pad {
+    grid-column: 2; grid-row: 1; position: relative; aspect-ratio: 1; max-width: 100%;
+    border-radius: 8px; border: 1px solid var(--line); cursor: grab; touch-action: none;
+    background:
+      radial-gradient(circle at 50% 50%, rgba(255,255,255,.05), transparent 70%),
+      linear-gradient(var(--line), var(--line)) 50% 0 / 1px 100% no-repeat,
+      linear-gradient(var(--line), var(--line)) 0 50% / 100% 1px no-repeat,
+      rgba(0, 0, 0, .25);
+  }
+  #pad:active { cursor: grabbing; }
+  #pad:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .pad-knob {
+    position: absolute; width: 16px; height: 16px; margin: -8px 0 0 -8px; border-radius: 50%;
+    background: var(--accent); box-shadow: 0 0 16px var(--accent); pointer-events: none;
+  }
+  .pad-knob::after {
+    content: ""; position: absolute; inset: -8px; border-radius: 50%; border: 1.5px solid var(--accent);
+    animation: pulse 1.8s ease-out infinite;
+  }
+  #pad.used .pad-knob::after { animation: none; opacity: 0; }
+  @keyframes pulse { from { transform: scale(.6); opacity: .9; } to { transform: scale(1.6); opacity: 0; } }
+  .slider { display: grid; grid-template-columns: 1fr auto; gap: 6px 8px; align-items: center; }
+  .slider label { font: 600 12px/1 var(--sans); color: var(--ink); }
+  .slider output { font: 400 11px/1 var(--mono); color: var(--ink-dim); font-variant-numeric: tabular-nums; }
+  .slider input { grid-column: 1 / -1; width: 100%; accent-color: var(--accent); margin: 0; }
+  .slider small { grid-column: 1 / -1; font: 400 11px/1.3 var(--sans); color: var(--ink-faint); }
+
+  #ghost {
+    position: fixed; left: 0; top: 0; z-index: 3; width: 22px; height: 22px; margin: -11px 0 0 -11px;
+    border-radius: 50%; border: 1.5px solid rgba(217, 226, 232, .6); pointer-events: none;
+    opacity: 0; transition: opacity .3s ease;
+  }
+  #ghost.on { opacity: 1; }
+  #ghost.down { border-color: var(--accent); box-shadow: 0 0 12px var(--accent); }
+
+  #toast {
+    position: fixed; left: 50%; top: 50%; z-index: 3; transform: translate(-50%, -50%);
+    padding: 8px 12px; border-radius: 8px; background: var(--glass); border: 1px solid var(--line);
+    font: 500 13px/1 var(--mono); color: var(--ink); pointer-events: none;
+    opacity: 0; transition: opacity .2s ease;
+  }
+  #toast.on { opacity: 1; }
+
+  #fallback { position: fixed; inset: 0; display: grid; place-items: center; padding: 16px; text-align: center; color: var(--ink-dim); font: 14px/1.5 var(--sans); }
+
+
+  /* ---- "How it got fast" overlay */
+  .journey {
+    position: fixed; inset: 0; z-index: 10; background: rgba(3, 4, 8, .72);
+    backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px);
+    display: grid; place-items: start center; overflow-y: auto;
+    padding: calc(env(safe-area-inset-top, 0px) + 24px) 16px calc(env(safe-area-inset-bottom, 0px) + 24px);
+  }
+  .jcard {
+    position: relative; width: 100%; max-width: 760px; background: rgba(10, 12, 20, .94);
+    border: 1px solid var(--line); border-radius: 14px; padding: 28px clamp(18px, 4vw, 40px) 32px;
+    color: var(--ink); font: 15px/1.6 var(--sans);
+  }
+  .jcard h2 { margin: 2px 0 12px; font: 600 30px/1.1 var(--sans); letter-spacing: -.015em; text-wrap: balance; }
+  .jcard h3 { margin: 30px 0 8px; font: 600 18px/1.3 var(--sans); text-wrap: balance; }
+  .jcard p, .jcard li { color: var(--ink-dim); max-width: 66ch; }
+  .jcard p { margin: 0 0 12px; }
+  .jcard ul { margin: 8px 0 12px; padding-left: 20px; display: grid; gap: 8px; }
+  .jcard strong { color: var(--ink); font-weight: 600; }
+  .jcard code { font: 400 13px var(--mono); color: var(--ink); }
+  .jkicker { font: 500 11px/1 var(--mono) !important; letter-spacing: .14em; text-transform: uppercase; color: var(--accent) !important; margin: 0 !important; }
+  .jlead { font-size: 17px; color: var(--ink) !important; }
+  .jcap { font: 400 12px/1.4 var(--mono) !important; color: var(--ink-faint) !important; margin-top: 4px !important; }
+  .jcard li ul { margin-top: 6px; gap: 4px; }
+  .jtable { width: 100%; border-collapse: collapse; margin: 10px 0 14px; font: 400 12px/1.5 var(--mono); }
+  .jtable th, .jtable td { text-align: left; padding: 5px 8px; border-bottom: 1px solid rgba(255,255,255,0.08); }
+  .jtable th:not(:first-child), .jtable td:not(:first-child) { text-align: right; white-space: nowrap; }
+  .jtable th { color: var(--ink-faint); font-weight: 400; }
+  .jtable tr.win td { color: var(--accent); }
+  .jfoot { font-size: 13px; color: var(--ink-faint) !important; margin-top: 24px !important; }
+  .jclose {
+    position: absolute; top: 14px; right: 14px; width: 34px; height: 34px; border-radius: 8px;
+    border: 1px solid var(--line); background: transparent; color: var(--ink-dim); font: 400 20px/1 var(--sans); cursor: pointer;
+  }
+  .jclose:hover { color: var(--ink); border-color: rgba(217, 226, 232, .32); }
+  .jclose:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  .jbars { display: grid; gap: 6px; margin: 10px 0 16px; }
+  .jrow { display: grid; grid-template-columns: minmax(0, 15em) minmax(0, 1fr) auto; gap: 12px; align-items: center; }
+  .jname { font: 400 13px/1.3 var(--sans); color: var(--ink-dim); }
+  .jtrack { height: 12px; background: rgba(217, 226, 232, .05); border-radius: 3px; overflow: hidden; }
+  .jbar { display: block; height: 100%; border-radius: 0 4px 4px 0; background: rgba(255, 143, 177, .45); }
+  .jrow.hl .jbar, .jrow:hover .jbar { background: var(--accent); }
+  .jrow.hl .jname, .jrow:hover .jname { color: var(--ink); }
+  .jval { font: 400 13px/1 var(--mono); color: var(--ink); font-variant-numeric: tabular-nums; white-space: nowrap; min-width: 9.5em; text-align: right; }
+  .jval em { font-style: normal; color: var(--ink-faint); margin-left: 6px; }
+  @media (max-width: 560px) {
+    .jrow { grid-template-columns: 1fr auto; }
+    .jtrack { grid-column: 1 / -1; order: 3; }
+    .jcard h2 { font-size: 24px; }
+  }
+
+  @media (max-width: 640px) {
+    #bottom { flex-wrap: wrap; }
+    #keys { display: none; }
+    .panel { width: 100%; flex-direction: row; flex-wrap: wrap; }
+    .panel > section { flex: 1 1 150px; }
+    #top { max-width: none; }
+  }
+  @media (prefers-reduced-motion: reduce) { .pad-knob::after { animation: none; } }
+</style>
+
+<canvas id="stage" aria-label="Interactive particle canvas"></canvas>
+<div id="ghost" aria-hidden="true"></div>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<header id="top" class="chrome">
+  <div class="title"><h1>Unravel</h1><span id="subtitle">particle instrument</span></div>
+  <p id="hint"></p>
+  <div id="options"></div>
+</header>
+
+<footer id="bottom" class="chrome">
+  <div id="perf">
+    <span class="backend" id="backend">…</span>
+    <span class="stat count"><span class="k">particles</span>
+      <button class="btn" id="less" type="button" aria-label="Fewer particles">−</button>
+      <span class="v" id="n">0</span>
+      <button class="btn" id="more" type="button" aria-label="More particles">+</button>
+    </span>
+    <span class="stat"><span class="k">sim</span><span class="v" id="simms">0</span></span>
+    <span class="stat"><span class="k">upload+submit</span><span class="v" id="drawms">0</span></span>
+    <span class="stat"><span class="k">frame</span><span class="v" id="framems">0</span></span>
+    <button class="btn" id="freeze" type="button" aria-pressed="false">Freeze</button>
+    <span id="readout"></span>
+    <div id="debug-backends" class="debug">backend:
+      <a href="#">auto</a> · <a href="#webgpu">webgpu</a> · <a href="#wasm-webgl">wasm + webgl</a> · <a href="#js-webgl">js + webgl</a>
+      · <a href="#journey" id="journey-link">how it got fast</a>
+    </div>
+    <div id="keys">
+      <kbd>hover</kbd> link · <kbd>drag</kbd> tear · <kbd>click</kbd> burst · <kbd>scroll</kbd> zoom · <kbd>shift+scroll</kbd> turbulence · <kbd>right-drag</kbd> orbit · <kbd>space</kbd> freeze · <kbd>[ ]</kbd> particles · <kbd>H</kbd> hide UI
+    </div>
+  </div>
+
+  <div class="panel" aria-label="Controls">
+    <section>
+      <h2>Bend the shape <button class="link" id="pad-reset" type="button">reset</button></h2>
+      <div class="padwrap">
+        <span id="pad-y"></span>
+        <div id="pad" tabindex="0" role="group" aria-label="Shape: drag the dot, or use arrow keys"><div class="pad-knob"></div></div>
+        <span id="pad-x"></span>
+      </div>
+    </section>
+    <section class="slider">
+      <label for="turb">Turbulence</label><output id="turb-v" for="turb">0.00</output>
+      <input id="turb" type="range" min="0" max="1" step="0.01" value="0.35">
+      <small>Warps the silk and stirs the smoke. Shift+scroll works too.</small>
+    </section>
+  </div>
+</footer>
+<div id="fallback" hidden>This needs WebGL2. Try a current Chrome, Edge, Firefox or Safari.</div>

@@ -1,0 +1,9 @@
+node_modules/
+shots/
+bench/.cache/
+bench/dist/
+bench/web/bundle-data.js
+bench/build/*
+!bench/build/simd.wasm
+dist/
+.DS_Store
