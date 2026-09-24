@@ -1,12 +1,13 @@
 // Shape change: JS cost of morphTo at 2.4M (WebGPU, offscreen), the flash frame, and the settled new shape.
 import pw from 'playwright';
+import { launch, root } from './browser.mjs';
 import { writeFileSync } from 'node:fs';
-const b = await pw.chromium.launch({ headless: true, ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {}), args: ['--enable-unsafe-webgpu', '--use-webgpu-adapter=swiftshader', '--enable-features=Vulkan'] });
+const b = await launch();
 const p = await b.newPage({ viewport: { width: 800, height: 500 } });
 p.on('console', (m) => { if (m.type() === 'error') console.log('console:', m.text().slice(0, 300)); });
 p.on('pageerror', (e) => console.log('pageerror', e.message));
 await p.addInitScript(() => { window.__GPU_OFFSCREEN = true; window.requestAnimationFrame = (cb) => { window.__tick = cb; return 1; }; });
-await p.goto('file://' + process.cwd() + '/dist/pages/webgpu.html');
+await p.goto(root + '/dist/pages/webgpu.html');
 await p.waitForFunction(() => window.__engine, null, { timeout: 60000, polling: 200 });
 const run = (n) => p.evaluate(async (n) => {
   const E = window.__engine; let now = E.lastFrame || performance.now();

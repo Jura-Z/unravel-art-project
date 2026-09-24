@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Runs every check and exits non-zero on the first class of failure. `npm test`.
-// Needs: bench/build/*.wasm (sh bench/kernels/c/build.sh) and Playwright's Chromium.
+// Needs: bench/build/*.wasm (sh bench/kernels/c/build.sh) and Chrome. Browser checks run in
+// installed Chrome on the real GPU (test/browser.mjs); SOFTWARE_GPU=1 for machines without one.
 import { spawnSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
 mkdirSync('shots', { recursive: true });
@@ -12,7 +13,7 @@ const T = [
     return g < 1e-6 && d < 1e-4;
   }],
   ['attractor pads: no collapse', 'node test/attractor_sweep.cjs', (o) => !/\s(\d|1\d)[! ]\s/.test(o.split('==').slice(1).join(''))],
-  ['kernels bit-exact (JS ↔ C/WASM)', 'node bench/run.mjs --impl js-ref,wasm-scalar,wasm-simd --frames 300 --runs 1', (o) => (o.match(/bit-exact ✓/g) || []).length === 3 && !/MISMATCH/.test(o)],
+  ['kernels bit-exact (JS ↔ C/WASM, 1 and N threads)', 'node bench/run.mjs --impl js-ref,wasm-scalar,wasm-simd,wasm-simd-mt --frames 300 --runs 1', (o) => (o.match(/bit-exact ✓/g) || []).length === 4 && !/MISMATCH/.test(o)],
   ['cursor search: all variants identical', 'node bench/links.mjs --n 150000 --frames 100 --every 10 --reps 2 --threads 2', (o) => {
     const rows = o.split('\n').filter((l) => /\d+\/\d+$/.test(l.trim()));
     return rows.length >= 10 && rows.every((l) => /\s0\/\d+$/.test(l.trim()));

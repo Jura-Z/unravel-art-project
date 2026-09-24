@@ -11,7 +11,7 @@ node run.mjs --impl wasm-simd,wasm-simd-mt --runs 3
 node run.mjs --shape Thomas --n 50000    # records a new trace on first use (cached in .cache/)
 node profile.mjs wasm-simd               # cost of each pass (by masking flags)
 node links.mjs --n 600000                # cursor-link search variants (JS, WASM, SIMD, threads, grid)
-node web/build.mjs                       # self-contained browser page -> dist/bench.html
+node web/build.mjs                       # self-contained browser page -> bench/dist/bench.html
 ```
 
 The fast loop is to edit a kernel, run `build.sh`, then run
@@ -27,8 +27,34 @@ cached, so iterations don't re-run the slow JS reference.
 | `wasm-scalar` | Same C → WASM `-O3` |
 | `wasm-simd-v1` | + SIMD128 for ODE/home only |
 | `wasm-simd` | + SoA state, vec4 warp grid, rows = vertex format, torn-particle compaction, vectorised simplex/curl |
-| `wasm-simd-mt` | `wasm-simd` on shared memory across worker threads (Atomics handshake, no copies) |
+| `wasm-simd-mt` | `wasm-simd` on shared memory across worker threads (Atomics handshake, no copies); Node workers here, Web Workers on the page (`kernels/wasm-mt-web.js`, needs COOP/COEP) |
 | `webgpu` | WGSL compute, one invocation per particle (browser page only; tolerance-checked) |
+
+## Results
+Desktop Chrome 153, 32-thread CPU, NVIDIA Ada Lovelace GPU, bench page served with COOP/COEP.
+CPU rows are wall time per frame (best of 3); WebGPU is GPU timestamp time over a batch
+(best of several runs; GPU clocks vary about 2x between runs).
+
+150k particles, the full 300-frame session (every CPU row bit-exact at every checkpoint):
+
+| impl | ms/frame |
+|---|---|
+| `wasm-scalar` | 8.0 |
+| `wasm-simd` | 3.3 |
+| `wasm-simd-mt` (32 threads) | 0.51 |
+| `webgpu` | 0.033 |
+
+Scale (120 frames: idle, then the first tear):
+
+| particles | wasm-simd | wasm-simd-mt (32) | webgpu |
+|---|---|---|---|
+| 150k | 2.16 | 0.42 (5.1x) | 0.013 |
+| 1M | 14.4 | 1.61 (8.9x) | 0.044 |
+| 4M | 58.0 | 6.72 (8.6x) | 0.42 |
+
+Threads stop scaling near 9x: from 1M up the step is bound by memory bandwidth. Measure in a
+plain browser window: with DevTools attached, Chrome keeps WebAssembly on its baseline
+compiler and every WASM row roughly doubles.
 
 ## Memory discipline
 - **Nothing allocates per frame in any timed kernel.** The JS kernels copy the few

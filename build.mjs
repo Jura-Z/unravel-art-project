@@ -5,10 +5,11 @@ import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 const files = ['noise.js', 'camera.js', 'uni.js', 'attractors.js', 'engine.js', 'sim/wasm-sim.js', 'gpu/backend.js',
   'modes/unravel.js', 'journey.js', 'main.js'];
 const wasm = readFileSync('bench/build/simd.wasm').toString('base64');
+const wasmMt = readFileSync('bench/build/simd-mt.wasm').toString('base64');   // threads: used only on cross-origin-isolated pages
 const wgsl = readFileSync('bench/kernels/webgpu/kernel.wgsl', 'utf8');
 const src = files.map((f) => `// ---- ${f}\n` + readFileSync(`src/${f}`, 'utf8')).join('\n');
 const shell = readFileSync('src/shell.html', 'utf8');
-const page = (forced) => `${shell}\n<script>\n(() => {\n'use strict';\nconst FORCED_BACKEND = ${JSON.stringify(forced)};\nconst WASM_SIMD_B64 = ${JSON.stringify(wasm)};\nconst KERNEL_WGSL = ${JSON.stringify(wgsl)};\n${src}\n})();\n</script>\n`;
+const page = (forced) => `${shell}\n<script>\n(() => {\n'use strict';\nconst FORCED_BACKEND = ${JSON.stringify(forced)};\nconst WASM_SIMD_B64 = ${JSON.stringify(wasm)};\nconst WASM_SIMD_MT_B64 = ${JSON.stringify(wasmMt)};\nconst KERNEL_WGSL = ${JSON.stringify(wgsl)};\n${src}\n})();\n</script>\n`;
 const wrap = (body) => `<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">\n</head>\n<body>\n${body}</body>\n</html>\n`;
 mkdirSync('dist/pages', { recursive: true });
 const auto = page('auto');

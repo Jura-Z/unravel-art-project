@@ -1,6 +1,6 @@
 # Unravel
 
-An interactive particle instrument for the browser. Up to 2.4 million particles ride a
+An interactive particle instrument for the browser. Up to 4.8 million particles ride a
 strange attractor (Halvorsen, Thomas, Lorenz, Aizawa). Drag across the shape to tear
 threads off: they turn to curl-noise smoke and drift back home. Bend the attractor with
 the pad, stir it with turbulence, and let it morph from shape to shape without a restart.
@@ -16,14 +16,16 @@ checked **bit for bit** against a reference before its speed counts. The page's
 | path | simulation | rendering | used when |
 |---|---|---|---|
 | `#webgpu` | WGSL compute | WebGPU, straight from the particle buffer | the browser has WebGPU |
-| `#wasm-webgl` | C → WASM SIMD128 (bit-exact) | WebGL2, uploads from WASM memory | WebGPU is missing |
+| `#wasm-webgl` | C → WASM SIMD128 (bit-exact), on every core when the page is cross-origin isolated | WebGL2, uploads from WASM memory | WebGPU is missing |
 | `#js-webgl` | plain JavaScript | WebGL2 | last resort |
 
-With no hash, the page picks the first path that works. On start-up it also picks a
+With no hash, the page picks the first path that works, and checks that WebGPU really draws
+(some implementations accept every call and present black) before trusting it. On start-up it also picks a
 particle count from its own measured frame time (up to 120 fps). The − and + buttons
 override it.
 
 ## Controls
+- **touch**: drag tears, tap bursts, pinch zooms, two-finger drag orbits
 - **hover**: lines to nearby particles
 - **drag**: tear
 - **click**: burst
@@ -44,7 +46,17 @@ sh bench/kernels/c/build.sh   # C → WASM (clang 18+ with the wasm32 target); o
 node build.mjs                # → dist/standalone.html, dist/pages/{webgpu,wasm-webgl,js-webgl}.html, dist/selftest.html
 ```
 
-`bench/build/simd.wasm` is committed, so `node build.mjs` works without clang.
+`bench/build/simd.wasm` and `simd-mt.wasm` are committed, so `node build.mjs` works without
+clang. Any clang 17+ with the wasm32 target works, e.g. the one in Visual Studio 2022
+(`VC/Tools/Llvm/x64/bin/clang.exe`).
+
+## Threads
+`simd-mt.wasm` is the same kernel on shared memory. The page steps it on every core (Web
+Workers, one Atomics hand-off per frame) when it is cross-origin isolated, i.e. served with
+`Cross-Origin-Opener-Policy: same-origin` and `Cross-Origin-Embedder-Policy: require-corp`.
+Without those headers it runs the single-threaded kernel. `?threads=N` overrides the count
+(1 = single-threaded). Particle counts change without restarting the simulation: on WebGPU
+the running particles are copied and only new ones are seeded.
 `dist/index.html` is the same page without the `<html>` wrapper, used for hosting as a
 claude.ai artifact.
 
@@ -52,15 +64,18 @@ claude.ai artifact.
 ```sh
 npm install                   # playwright, esbuild (dev only)
 npm test -- --node            # no browser: kernels bit-exact, cursor search, noise, attractor pads
-npm test                      # + headless browser checks (set CHROME_PATH to use a specific Chrome)
+npm test                      # + browser checks in installed Chrome, headed, on the real GPU
 ```
+
+Browser checks launch through `test/browser.mjs`: installed Chrome on the real GPU, so WebGPU
+and WebGL behave as they do for visitors. `CHROME_PATH` picks a binary; `SOFTWARE_GPU=1` falls
+back to headless SwiftShader on machines without a GPU (renders, but timings mean nothing).
 
 GPU behaviour and performance should be checked on a real GPU. Open
 `dist/selftest.html` in a desktop browser. It runs every backend in turn on your GPU and
 shows a PASS/FAIL table covering: backend selection, auto particle count, cursor links
 (compared with a full scan), shape-change cost and the worst frame at the largest count,
-input mapping, the pad, the demo cursor, and the article. Headless software GPUs are fine
-for "does it render" checks, but their timings mean nothing.
+input mapping, the pad, the demo cursor, and the article.
 
 Test hooks:
 - `window.__engine`: the running engine
@@ -73,10 +88,10 @@ src/            the app (concatenated by build.mjs in a fixed order; shared glob
   modes/unravel.js   host logic: input, morphs, auto-fit, demo, JS simulation, cursor links
   engine.js          WebGL2 renderer, frame loop, input, HUD, auto particle count
   gpu/backend.js     WebGPU simulation + renderer
-  sim/wasm-sim.js    WASM SIMD simulation (the bench kernel)
+  sim/wasm-sim.js    WASM SIMD simulation (the bench kernel), single-threaded or on a worker pool
   journey.js         the "How it got fast" article
 bench/          deterministic benchmark, kernels (JS, C, WGSL), spec, browser bench page
-test/           Node and Playwright checks, run.mjs, selftest-probe.js
+test/           Node and Playwright checks, run.mjs, browser.mjs (the test browser), selftest-probe.js
 ```
 
 ## Credits

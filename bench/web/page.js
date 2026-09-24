@@ -5,6 +5,7 @@ import { UNI, fnv } from '../core.js';
 import { makeHost } from '../host.js';
 import { JsRef } from '../kernels/js-ref.js';
 import { makeWasm } from '../kernels/wasm-core.js';
+import { makeWasmMTWeb } from '../kernels/wasm-mt-web.js';
 import { makeWebGPU } from '../kernels/webgpu/webgpu.js';
 import WGSL from '../kernels/webgpu/kernel.wgsl';
 import { BUNDLE } from './bundle-data.js';   // generated: trace, reference checksums, wasm bytes
@@ -14,14 +15,17 @@ const b64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
 const { n, frames, shape, checks: REF, initSum: INIT_SUM } = BUNDLE.meta;
 const CHECK = [0, 9, 99, frames - 1];
 const trace = new Float32Array(b64(BUNDLE.trace).buffer);
-const wasmBytes = { scalar: b64(BUNDLE.wasm.scalar), simd: b64(BUNDLE.wasm.simd) };
+const wasmBytes = { scalar: b64(BUNDLE.wasm.scalar), simd: b64(BUNDLE.wasm.simd), simdMt: b64(BUNDLE.wasm.simdMt) };
+const THREADS = Math.min(navigator.hardwareConcurrency || 1, 32);
 const SCALE_N = [150000, 1000000, 4000000];
-const SCALE_FRAMES = 120;   // frames 0-119: idle, then the first tear stroke
+const SCALE_FRAMES = 120;
+const SCALE_IDS = ['wasm-simd', 'wasm-simd-mt', 'webgpu'];   // frames 0-119: idle, then the first tear stroke
 
 const BACKENDS = [
   { id: 'js-ref', label: 'JS reference (exact f32 via Math.fround)', make: async (m) => new JsRef(m), slow: true },
   { id: 'wasm-scalar', label: 'C → WASM -O3, scalar', make: (m) => makeWasm(m, 'scalar', wasmBytes.scalar) },
   { id: 'wasm-simd', label: 'C → WASM -O3, SIMD128 + compaction', make: (m) => makeWasm(m, 'simd', wasmBytes.simd) },
+  { id: 'wasm-simd-mt', label: `WASM SIMD128, ${THREADS} threads on shared memory`, make: (m) => makeWasmMTWeb(m, wasmBytes.simdMt, THREADS), mt: true },
   { id: 'webgpu', label: 'WebGPU compute (WGSL)', make: (m) => makeWebGPU(m, WGSL), gpu: true },
 ];
 
@@ -183,8 +187,9 @@ async function runAll() {
       for (const m of SCALE_N) {
         const initM = await initFor(m);
         const entry = { n: m, frames: SCALE_FRAMES };
-        for (const id of ['wasm-simd', 'webgpu']) {
+        for (const id of SCALE_IDS) {
           const b = BACKENDS.find((x) => x.id === id);
+          if (!$('use-' + id).checked) continue;
           const tr = $(`scale-${id}-${m}`);
           tr.querySelector('[data-k=ok]').textContent = 'running…';
           try {
@@ -232,19 +237,19 @@ function boot() {
   const tb = $('rows');
   for (const b of BACKENDS) makeRow(tb, 'row-' + b.id, b.label);
   const st = $('scale-rows');
-  for (const m of SCALE_N) for (const id of ['wasm-simd', 'webgpu']) makeRow(st, `scale-${id}-${m}`, `${id} · ${m >= 1e6 ? m / 1e6 + 'M' : m / 1e3 + 'k'}`);
+  for (const m of SCALE_N) for (const id of SCALE_IDS) makeRow(st, `scale-${id}-${m}`, `${id} · ${m >= 1e6 ? m / 1e6 + 'M' : m / 1e3 + 'k'}`);
   const opts = $('opts');
   for (const b of BACKENDS) {
     const l = document.createElement('label');
-    const avail = b.gpu ? !!navigator.gpu : true;
-    l.innerHTML = `<input type="checkbox" id="use-${b.id}" ${!b.slow && avail ? 'checked' : ''} ${avail ? '' : 'disabled'}> ${b.id}${b.slow ? ' <small>(slow, ~25 s)</small>' : ''}${avail ? '' : ' <small>(no WebGPU here)</small>'}`;
+    const avail = b.gpu ? !!navigator.gpu : b.mt ? crossOriginIsolated : true;
+    l.innerHTML = `<input type="checkbox" id="use-${b.id}" ${!b.slow && avail ? 'checked' : ''} ${avail ? '' : 'disabled'}> ${b.id}${b.slow ? ' <small>(slow, ~25 s)</small>' : ''}${avail ? '' : b.mt ? ' <small>(page not cross-origin isolated)</small>' : ' <small>(no WebGPU here)</small>'}`;
     opts.appendChild(l);
   }
   const l = document.createElement('label');
   l.innerHTML = `<input type="checkbox" id="use-scale" checked> scale test <small>(150k / 1M / 4M, ~1 min)</small>`;
   opts.appendChild(l);
   $('mt').textContent = crossOriginIsolated
-    ? 'This page is cross-origin isolated: threads could run here.'
+    ? `This page is cross-origin isolated: WASM runs on ${THREADS} threads here.`
     : 'WASM threads need a cross-origin-isolated page (COOP/COEP headers), which this host does not send. Thread results come from the Node runner (table below).';
   $('run').addEventListener('click', runAll);
 }

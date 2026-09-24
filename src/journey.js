@@ -11,11 +11,12 @@ const JOURNEY_DATA = {
     { name: 'WASM SIMD, rebuilt', ms: 6.8, note: 'Compaction, vector noise, one-load grid cells' },
     { name: 'WASM SIMD + 2 threads', ms: 3.75, note: 'Shared memory, no copies, one Atomics hand-off per frame' },
   ],
-  // A desktop browser (NVIDIA Ada Lovelace GPU, 32 threads, Chrome 152)
+  // Desktop Chrome 153, 32-thread CPU, NVIDIA Ada Lovelace GPU; bench page, 120-frame session.
+  // CPU: wall time, best of 3. GPU: timestamp time over a batch, best of several runs (clocks vary ~2x).
   scale: [
-    { n: '150k', wasm: 2.16, gpu: 0.0131 },
-    { n: '1M', wasm: 14.7, gpu: 0.129 },
-    { n: '4M', wasm: 58.9, gpu: 0.421 },
+    { n: '150k', wasm: 2.16, mt: 0.42, gpu: 0.013 },
+    { n: '1M', wasm: 14.4, mt: 1.61, gpu: 0.044 },
+    { n: '4M', wasm: 58.0, mt: 6.72, gpu: 0.42 },
   ],
 };
 
@@ -40,10 +41,12 @@ function buildJourney() {
   const steps = journeyBars(d.steps, 'ms', (v) => `${v.toFixed(v < 10 ? 2 : 1)} ms <em>${(base / v).toFixed(base / v < 1.5 ? 2 : 1)}×</em>`, { label: 'Milliseconds per frame by implementation', highlight: d.steps.length - 1 });
   const scaleRows = [];
   for (const s of d.scale) {
-    scaleRows.push({ label: `${s.n} · WASM SIMD`, v: s.wasm });
-    scaleRows.push({ label: `${s.n} · WebGPU`, v: s.gpu, gpu: true });
+    scaleRows.push({ label: `${s.n} · WASM, 1 thread`, v: s.wasm });
+    scaleRows.push({ label: `${s.n} · WASM, 32 threads`, v: s.mt, vs: s.wasm });
+    scaleRows.push({ label: `${s.n} · WebGPU`, v: s.gpu, vs: s.mt, gpu: true });
   }
-  const scale = journeyBars(scaleRows, 'v', (v, r) => `${v < 1 ? v.toFixed(3) : v.toFixed(1)} ms${r.gpu ? ` <em>${(scaleRows[scaleRows.indexOf(r) - 1].v / v).toFixed(0)}×</em>` : ''}`, { log: true, label: 'Milliseconds per frame, WASM SIMD vs WebGPU, log scale' });
+  // each speed-up is against the bar above it: threads vs one thread, the GPU vs every CPU thread
+  const scale = journeyBars(scaleRows, 'v', (v, r) => `${v < 1 ? v.toFixed(3) : v.toFixed(1)} ms${r.vs ? ` <em>${(r.vs / v).toFixed(0)}×</em>` : ''}`, { log: true, label: 'Milliseconds per frame: WASM on one thread, on 32 threads, and WebGPU, log scale' });
 
   const el = document.createElement('div');
   el.id = 'journey';
@@ -57,7 +60,7 @@ function buildJourney() {
     <button class="jclose" type="button" aria-label="Close">×</button>
     <p class="jkicker">Behind the instrument</p>
     <h2 id="journey-title">How it got fast</h2>
-    <p class="jlead">Every frame, each particle follows a strange attractor, gets bent by turbulence and your brush, and, once torn, drifts through 3D curl noise. At 150,000 particles the first JavaScript version needed <strong>71 ms</strong> a frame, four times over budget. On a desktop GPU the same work takes <strong>0.013 ms</strong>. This is how it got from one to the other.</p>
+    <p class="jlead">Every frame, each particle follows a strange attractor, gets bent by turbulence and your brush, and, once torn, drifts through 3D curl noise. At 150,000 particles the first JavaScript version needed <strong>71 ms</strong> a frame, four times over budget. On the CPU, WebAssembly and a SIMD rebuild guided by the profile brought it to <strong>6.8 ms</strong> on one core, bit for bit identical, and threads spread that over every core. On the GPU the simulation stopped being the problem at all, and the bottleneck moved to getting particles on screen. This is how.</p>
 
     <h3>Rule one: faster must mean identical</h3>
     <p>A speed-up only counts if it computes the same thing. So before optimising anything, we pinned down what "the same" means:</p>
@@ -76,15 +79,16 @@ function buildJourney() {
       <li><strong>C compiled to WebAssembly gave 4× for free,</strong> by doing float32 natively.</li>
       <li><strong>The first SIMD attempt gave 1.15×.</strong> It vectorised the part that was already cheap. The profile said the time was in the smoke's noise.</li>
       <li><strong>Rebuilt around that profile, SIMD gave 2.5× more.</strong> Torn particles are packed together so the noise runs four at a time, and each turbulence cell is one 16-byte load.</li>
-      <li><strong>Threads halve it again on two cores,</strong> sharing memory with one hand-off per frame. The page can't rely on them, though: they need cross-origin isolation, which many hosts can't turn on.</li>
+      <li><strong>Threads halve it again on two cores,</strong> sharing memory with one hand-off per frame, and keep going with more: on a 32-thread desktop, 150k particles take 0.42 ms instead of 2.16. They need the page to be cross-origin isolated (two HTTP headers). This site sends them; where a host can't, the page runs on one thread.</li>
     </ul>
 
     <h3>Then the GPU</h3>
-    <p class="jcap">Milliseconds per frame (log scale). Desktop browser, NVIDIA Ada Lovelace GPU.</p>
+    <p class="jcap">Milliseconds per frame (log scale). Desktop browser: 32-thread CPU, NVIDIA Ada Lovelace GPU.</p>
     ${scale}
     <ul>
-      <li><strong>The same kernel in WGSL runs 115–165× faster than WASM SIMD,</strong> and stays under half a millisecond at 4 million particles.</li>
-      <li><strong>So the renderer moved to WebGPU too.</strong> WebGL can't read WebGPU buffers, and copying particles back every frame would undo the win. Particles are born, moved and drawn without leaving the GPU. The CPU sends under a kilobyte of settings per frame.</li>
+      <li><strong>Threads stop scaling at about 9×.</strong> From a million particles up, each step streams hundreds of megabytes, and memory bandwidth, not the number of cores, sets the pace.</li>
+      <li><strong>The GPU is still 16–37× faster than all 32 threads,</strong> and the same kernel in WGSL stays under half a millisecond at 4 million particles. That's a fair fight now: a whole GPU against a whole CPU.</li>
+      <li><strong>The bottleneck moved, so the renderer moved to WebGPU too.</strong> WebGL can't read WebGPU buffers, and copying particles back every frame would undo the win. Particles are born, moved and drawn without leaving the GPU. The CPU sends under a kilobyte of settings per frame.</li>
       <li><strong>Timing it needed a trick.</strong> Browsers round GPU timestamps to about 0.1 ms, so one frame read as zero. The benchmark times a batch of frames instead.</li>
       <li><strong>The GPU can't be bit-exact.</strong> WGSL allows looser division and fused multiply-adds. 98.8% of values match exactly after one frame, and the rest differ by a few millionths. Because the motion is chaotic, it is checked at frames 1 and 10.</li>
     </ul>
@@ -122,6 +126,7 @@ function buildJourney() {
     <h3>What went wrong</h3>
     <ul>
       <li><strong>A benchmark that lied:</strong> code loaded through <code>eval</code> ran 5× slower in V8.</li>
+      <li><strong>And another:</strong> with a debugger attached, Chrome keeps WebAssembly on its baseline compiler. Every WASM number doubled until the benchmark ran in a plain browser window.</li>
       <li><strong>Threads that hung:</strong> reserving 2 GB of shared memory failed silently inside a worker.</li>
       <li><strong>A test browser that couldn't show WebGPU:</strong> headless Chromium on Linux loses the device when a WebGPU canvas presents, so tests render offscreen.</li>
       <li><strong>A brush that launched particles</strong> at 10× hand speed. Torn threads now ease toward your hand's velocity.</li>
@@ -130,7 +135,7 @@ function buildJourney() {
     </ul>
 
     <h3>What runs on your machine</h3>
-    <p>WebGPU when your browser has it. Otherwise WebAssembly SIMD with WebGL2, which is bit-exact and uploads straight from WebAssembly memory. Plain JavaScript is the last resort. The footer switches between them. Nothing allocates per frame on any path.</p>
+    <p>WebGPU when your browser has it, after a quick check that it really draws. Otherwise WebAssembly SIMD on every core with WebGL2, which is bit-exact and uploads straight from WebAssembly memory. Plain JavaScript is the last resort. The footer switches between them. Nothing allocates per frame on any path.</p>
     <p class="jfoot">The benchmark, the kernels (C, WGSL, JS), the recorded session and the checksums are in the source.</p>
   </article>`;
   document.body.appendChild(el);

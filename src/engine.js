@@ -3,7 +3,7 @@
 // The WebGPU path has its own renderer (gpu/backend.js) with the same draw() interface.
 // Simulation lives in the mode (modes/unravel.js), on one of three backends.
 
-const AUTO_WINDOW = 60, AUTO_MIN_FRAME_MS = 1000 / 120;   // auto particle count
+const AUTO_WINDOW = 30, AUTO_MIN_FRAME_MS = 1000 / 120;   // auto particle count
 const fmtCount = (n) => (n >= 1e6 ? `${+(n / 1e6).toFixed(1)}M` : `${Math.round(n / 1e3)}k`);
 
 // ---------------------------------------------------------------------------
@@ -717,7 +717,7 @@ class Engine {
     this.syncTurb(false);
     this.syncCountButtons();
     this.demoActive = !this.reducedMotion;
-    this.auto = window.__MAX_FRAMES ? null : { on: true, settle: 1.5, ms: [], work: [], vsync: Infinity, steps: 0, last: 0 };
+    this.auto = window.__MAX_FRAMES ? null : { on: true, settle: 0.6, ms: [], work: [], vsync: Infinity, steps: 0, last: 0 };
     this.demoTime = 0;
     this.demoDown = false;
     this.time = 0;
@@ -730,8 +730,7 @@ class Engine {
     const k = Math.max(0, Math.min(m.counts.length - 1, m.countIndex + dir));
     if (k === m.countIndex) return;
     m.countIndex = k;
-    m.init(this, m.counts[k]);
-    this.renderer.clear();
+    m.resize(this, m.counts[k]);
     this.stats.sim = 0;
     this.syncCountButtons();
   }
@@ -762,12 +761,12 @@ class Engine {
     const done = (msg) => { a.on = false; if (msg) this.toast(msg); };
     if (frame > target * 1.2 + 0.5) {                     // missing frames at this count
       if (a.last === 1 && i > 0) { this.changeCount(-1, true); return done(`Auto: ${fmtCount(m.counts[m.countIndex])} particles`); }
-      if (i > 0 && a.steps < 3) { a.steps++; a.last = -1; this.changeCount(-1, true); a.settle = 1; return; }
+      if (i > 0 && a.steps < 3) { a.steps++; a.last = -1; this.changeCount(-1, true); a.settle = 0.35; return; }
       return done();
     }
     const next = m.counts[i + 1];
     const cpuOk = this.simBackend === 'gpu' || work * (next / m.counts[i]) < target * 0.7;
-    if (a.last !== -1 && next && cpuOk && a.steps < 6) { a.steps++; a.last = 1; this.changeCount(1, true); a.settle = 1; return; }
+    if (a.last !== -1 && next && cpuOk && a.steps < 6) { a.steps++; a.last = 1; this.changeCount(1, true); a.settle = 0.35; return; }
     done(a.steps ? `Auto: ${fmtCount(m.counts[i])} particles` : null);
   }
 
@@ -827,7 +826,24 @@ class Engine {
   bindInput() {
     const c = this.canvas;
     c.addEventListener('contextmenu', (e) => e.preventDefault());
+    // Two fingers: pinch = zoom, drag = orbit. A second finger cancels a tear, and the gesture
+    // holds until every finger is up so the last one doesn't start tearing.
+    const touches = new Map();
+    const pair = () => {
+      const [a, b] = [...touches.values()];
+      return { d: Math.hypot(b.x - a.x, b.y - a.y), mx: (a.x + b.x) / 2, my: (a.y + b.y) / 2 };
+    };
     c.addEventListener('pointerdown', (e) => {
+      if (e.pointerType === 'touch') {
+        touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (touches.size === 2) {
+          this.userInput();
+          if (this.pressed) { this.pressed = false; this.dispatch('up', this.makePointer(e.clientX, e.clientY)); }
+          this._pinch = { ...pair(), dist: this.camera.dist, yaw: this.camera.yaw, pitch: this.camera.pitch };
+          return;
+        }
+        if (this._pinch || touches.size > 2) return;
+      }
       this.userInput();
       c.setPointerCapture(e.pointerId);
       const orbit = e.button === 2 || e.altKey || e.ctrlKey || e.metaKey || this.frozen;
@@ -841,6 +857,18 @@ class Engine {
       this.dispatch('down', this.makePointer(e.clientX, e.clientY));
     });
     c.addEventListener('pointermove', (e) => {
+      if (touches.has(e.pointerId)) {
+        touches.set(e.pointerId, { x: e.clientX, y: e.clientY });
+        if (this._pinch) {
+          if (touches.size === 2) {
+            const p = pair(), g = this._pinch, lo = this.mode.minPitch !== undefined ? this.mode.minPitch : -1.35;
+            this.camera.dist = Math.max(1.5, Math.min(12, g.dist * g.d / Math.max(1, p.d)));
+            this.camera.yaw = g.yaw - (p.mx - g.mx) * 0.006;
+            this.camera.pitch = Math.max(lo, Math.min(1.35, g.pitch + (p.my - g.my) * 0.006));
+          }
+          return;
+        }
+      }
       if (this.orbiting) {
         const o = this._orbitFrom;
         const lo = this.mode.minPitch !== undefined ? this.mode.minPitch : -1.35;
@@ -852,6 +880,7 @@ class Engine {
       this.dispatch(this.pressed ? 'move' : 'hover', this.makePointer(e.clientX, e.clientY));
     });
     const end = (e) => {
+      if (touches.delete(e.pointerId) && this._pinch) { if (touches.size === 0) this._pinch = null; return; }
       if (this.orbiting) { this.orbiting = false; c.classList.remove('orbiting'); return; }
       if (!this.pressed) return;
       this.pressed = false;
@@ -963,13 +992,16 @@ class Engine {
     if (m.tickColor) m.tickColor(dt, this);
     this.renderer.tickPalette(dt, m.paletteRate || 1.5);
     const trailComp = m.trails === false ? 1 / (1 - m.decay) : 1;
-    const gain = trailComp * m.gain * Math.pow(m.refCount / m.count, 0.8) / (this.dpr * this.dpr) * (this.renderer.hdr ? 1 : 0.5);
+    // A soft (1 - r²)² disc of diameter px delivers π/12·px² of light; gain divides by that per CSS
+    // pixel, so every display gets the light of a hard 1-px point at 1×, just in a bigger dot.
+    const px = m.pointSize * this.dpr, cssPx = m.pointSize;
+    const gain = trailComp * m.gain * Math.pow(m.refCount / m.count, 0.8) / (Math.PI / 12 * cssPx * cssPx) * (this.renderer.hdr ? 1 : 0.5);
     this.renderer.upload(m.P, m.T, m.count);
     const lines = m.lines || { count: 0 };
     this.renderer.uploadLines(lines.data, lines.count);
     this.renderer.draw({
       vp: this.camera.vp, eye: this.camera.eye, count: m.count,
-      size: m.pointSize * this.dpr, gain,
+      size: px, gain,
       // Motion blur = the fade pass: last frame is multiplied by `decay`, not cleared.
       // With it off we clear, and scale gain by 1/(1-decay) to keep the same brightness.
       decay: m.trails === false ? 0 : (this.frozen ? Math.min(m.decay, 0.6) : m.decay),

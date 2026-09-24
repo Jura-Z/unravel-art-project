@@ -1,11 +1,12 @@
 // UI checks: wheel = zoom / shift+wheel = turbulence, pad knob stays on the pad for every
 // shape, the demo's links vanish with its ghost cursor, and keys are ignored under the article.
 import pw from 'playwright';
-const b = await pw.chromium.launch({ headless: true, ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {}), args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+import { launch, root } from './browser.mjs';
+const b = await launch();
 const p = await b.newPage({ viewport: { width: 1280, height: 800 } });
 const errs = []; p.on('pageerror', (e) => errs.push(e.message));
 await p.addInitScript(() => { window.__MAX_FRAMES = 1e9; window.requestAnimationFrame = (cb) => { window.__tick = cb; return 1; }; });
-await p.goto('file://' + process.cwd() + '/dist/pages/js-webgl.html');
+await p.goto(root + '/dist/pages/js-webgl.html');
 await p.waitForFunction(() => window.__engine && window.__tick, null, { timeout: 60000, polling: 200 });
 const r = await p.evaluate(() => {
   const E = window.__engine, m = E.mode, c = E.canvas; let now = E.lastFrame;

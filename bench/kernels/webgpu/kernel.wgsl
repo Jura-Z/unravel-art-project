@@ -108,8 +108,8 @@ fn grid(@builtin(global_invocation_id) gid: vec3<u32>) {
 }
 
 @compute @workgroup_size(64)
-fn step(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let i = gid.x;
+fn step(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+  let i = gid.x + gid.y * nwg.x * 64u;
   if (i >= N) { return; }
   let kind = ui(0u); let frame = ui(1u); let flags = ui(2u);
   // ---- ODE ----
@@ -242,8 +242,8 @@ fn step(@builtin(global_invocation_id) gid: vec3<u32>) {
 // Shape morph (app only): every particle keeps its position and waits for a top-down
 // wave before easing onto its home on the new attractor. U[84] = top y, U[85] = span.
 @compute @workgroup_size(64)
-fn morph(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let i = gid.x;
+fn morph(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+  let i = gid.x + gid.y * nwg.x * 64u;
   if (i >= N) { return; }
   let top = clamp((U[84] - P[i].y) / U[85], 0.0f, 1.0f);
   F[i] = -(MORPH_EASE + 1.6f * top + rnd(i, ui(1u), 31u) * 0.15f);

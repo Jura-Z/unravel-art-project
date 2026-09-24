@@ -90,8 +90,8 @@ fn screen(p: vec3f) -> vec3f {
 }
 // Candidates are a fixed hashed subset (stable from frame to frame), sized by the CPU so
 // ~K fall inside the cursor radius; the first K found are kept.
-@compute @workgroup_size(64) fn pick(@builtin(global_invocation_id) g: vec3u) {
-  let i = g.x;
+@compute @workgroup_size(64) fn pick(@builtin(global_invocation_id) g: vec3u, @builtin(num_workgroups) nwg: vec3u) {
+  let i = g.x + g.y * nwg.x * 64u;
   if (i >= u32(R.misc.y) || R.cursor.w < 0.5) { return; }
   if (f32(hsh(i) >> 8u) * (1.0 / 16777216.0) >= R.misc.z) { return; }
   let s = screen(P[i].xyz);
@@ -209,7 +209,7 @@ fn hash2(p0: vec2f) -> f32 { var p = fract(p0 * vec2f(123.34, 456.21)); p += dot
 
 const SEED_WGSL = `
 override N: u32;
-struct Par { jit: f32, salt: u32, len: u32, pad: u32 }
+struct Par { jit: f32, salt: u32, len: u32, start: u32 }
 @group(0) @binding(0) var<uniform> par: Par;
 @group(0) @binding(1) var<storage, read> ORB: array<f32>;
 @group(0) @binding(2) var<storage, read_write> S: array<f32>;
@@ -219,12 +219,16 @@ fn rnd(i: u32, axis: u32) -> f32 {       // lowbias32, same as seedRnd() in unra
   return f32(x >> 8u) * (1.0 / 16777216.0);
 }
 @compute @workgroup_size(64)
-fn seed(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let i = gid.x;
-  if (i >= N) { return; }
+fn seed(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(num_workgroups) nwg: vec3<u32>) {
+  let i = gid.x + gid.y * nwg.x * 64u;
+  if (i >= N || i < par.start) { return; }
   let o = (i & (par.len - 1u)) * 3u;
   for (var a = 0u; a < 3u; a++) { S[i * 3u + a] = ORB[o + a] + (rnd(i, a) - 0.5) * par.jit; }
 }`;
+
+// One invocation per particle, 64 per workgroup. A dispatch dimension caps at 65535 groups
+// (4.19M particles), so larger counts wrap into rows; kernels rebuild i from num_workgroups.
+const groups64 = (n) => { const g = Math.ceil(n / 64), x = Math.min(g, 32768); return [x, Math.ceil(g / x)]; };
 
 class GpuBackend {
   static async create(canvas) {
@@ -239,6 +243,7 @@ class GpuBackend {
     const ctx = window.__GPU_OFFSCREEN ? { canvas, offscreen: true } : canvas.getContext('webgpu');
     if (!ctx) throw new Error('No WebGPU canvas context');
     const b = new GpuBackend(device, ctx, adapter);
+    b.kernelWgsl = KERNEL_WGSL;
     await b.checkShaders();
     return b;
   }
@@ -248,7 +253,7 @@ class GpuBackend {
     this.device = device; this.ctx = ctx; this.adapter = adapter;   // keep the adapter alive (Dawn loses the device if its instance is collected)
     this.gpuName = [adapter.info?.vendor, adapter.info?.architecture].filter(Boolean).join(' ');
     this.format = ctx.offscreen ? 'rgba8unorm' : navigator.gpu.getPreferredCanvasFormat();
-    if (!ctx.offscreen) ctx.configure({ device, format: this.format, alphaMode: 'opaque' });
+    if (!ctx.offscreen) ctx.configure({ device, format: this.format, alphaMode: 'opaque', usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
     this.hdr = true; this.bloomSupported = true;
     this.palette = new Float32Array(15); this.paletteTarget = new Float32Array(15);
     this.w = 0; this.h = 0;
@@ -260,8 +265,8 @@ class GpuBackend {
       this.lost = true;
       if (info.reason !== 'destroyed') { console.error('WebGPU device lost:', info.message); window.dispatchEvent(new CustomEvent('unravel-gpu-lost')); }
     });
-    let reported = 0;
-    device.addEventListener('uncapturederror', (e) => { if (reported++ < 5) console.error('WebGPU error:', e.error.message); });
+    this.gpuErrors = 0;
+    device.addEventListener('uncapturederror', (e) => { if (this.gpuErrors++ < 5) console.error('WebGPU error:', e.error.message); });
     this.buildPipelines();
   }
 
@@ -316,10 +321,12 @@ class GpuBackend {
   }
 
   // ---------------------------------------------------------------- simulation
-  createSim(n) {
+  // carry: keep the running particles (the first min(old, n) of them) instead of starting over.
+  createSim(n, carry) {
     const d = this.device, self = this;
-    if (this.sim) this.sim.destroy();
-    const module = d.createShaderModule({ code: KERNEL_WGSL });
+    const prev = carry ? this.sim : null;
+    if (this.sim && !prev) this.sim.destroy();
+    const module = d.createShaderModule({ code: this.kernelWgsl });
     const G = WARP_KERNEL_G, cellF = Math.fround(Math.fround(4.4) / (G - 1));
     const constants = { W_CELL: cellF, W_INV: Math.fround(1 / cellF), W_GMAX: Math.fround(Math.fround(G) - Math.fround(1.001)), N: n };
     const pipe = (entryPoint) => d.createComputePipeline({ layout: 'auto', compute: { module, entryPoint, constants } });
@@ -358,7 +365,8 @@ class GpuBackend {
         this.hasSamples = false;
       },
       reseed(S) { d.queue.writeBuffer(buf.S, 0, S); },
-      seed(orbit, jit, salt) {
+      writeHeal(heal, from) { if (from < n) d.queue.writeBuffer(buf.heal, from * 4, heal, from, n - from); },
+      seed(orbit, jit, salt, start = 0) {
         let ob = orbitBufs.get(orbit);
         if (!ob) {
           ob = d.createBuffer({ size: orbit.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
@@ -368,7 +376,7 @@ class GpuBackend {
             { binding: 0, resource: { buffer: seedPar } }, { binding: 1, resource: { buffer: ob } }, { binding: 2, resource: { buffer: buf.S } }] }));
         }
         const par = new ArrayBuffer(16);
-        new Float32Array(par, 0, 1)[0] = jit; new Uint32Array(par, 4, 3).set([salt, orbit.length / 3, 0]);
+        new Float32Array(par, 0, 1)[0] = jit; new Uint32Array(par, 4, 3).set([salt, orbit.length / 3, start]);
         d.queue.writeBuffer(seedPar, 0, par);
         this.pendingSeed = seedBinds.get(orbit);
       },
@@ -382,11 +390,11 @@ class GpuBackend {
         d.queue.writeBuffer(buf.U, 0, U);
         if (this.pendingClear) { for (const k of ['P', 'V', 'F', 'T']) enc.clearBuffer(buf[k]); this.pendingClear = false; }
         const pass = enc.beginComputePass();
-        if (this.pendingSeed) { pass.setPipeline(pSeed); pass.setBindGroup(0, this.pendingSeed); pass.dispatchWorkgroups(Math.ceil(n / 64)); this.pendingSeed = null; }
-        if (this.pendingMorph) { pass.setPipeline(pMorph); pass.setBindGroup(0, bMorph); pass.dispatchWorkgroups(Math.ceil(n / 64)); this.pendingMorph = null; }
+        if (this.pendingSeed) { pass.setPipeline(pSeed); pass.setBindGroup(0, this.pendingSeed); pass.dispatchWorkgroups(...groups64(n)); this.pendingSeed = null; }
+        if (this.pendingMorph) { pass.setPipeline(pMorph); pass.setBindGroup(0, bMorph); pass.dispatchWorkgroups(...groups64(n)); this.pendingMorph = null; }
         if (this.stepPending) {
           pass.setPipeline(pGrid); pass.setBindGroup(0, bGrid); pass.dispatchWorkgroups(Math.ceil(G * G * G / 64));
-          pass.setPipeline(pStep); pass.setBindGroup(0, bStep); pass.dispatchWorkgroups(Math.ceil(n / 64));
+          pass.setPipeline(pStep); pass.setBindGroup(0, bStep); pass.dispatchWorkgroups(...groups64(n));
           this.stepPending = false;
         }
         pass.end();
@@ -410,6 +418,13 @@ class GpuBackend {
       },
       destroy() { for (const b of orbitBufs.values()) b.destroy(); seedPar.destroy(); for (const k in buf) buf[k].destroy(); for (const r of ring) r.buf.destroy(); },
     };
+    if (prev) {
+      const k = Math.min(prev.n, n), enc = d.createCommandEncoder();
+      for (const [key, bytes] of [['S', 12], ['P', 16], ['V', 12], ['F', 4], ['T', 4], ['heal', 4]]) enc.copyBufferToBuffer(prev.buf[key], 0, buf[key], 0, k * bytes);
+      d.queue.submit([enc.finish()]);
+      U.set(prev.U);
+      prev.destroy();                         // safe: the copy is already queued
+    }
     this.sim = sim;
     this.particleBinds = null;
     return sim;
@@ -544,7 +559,7 @@ class GpuBackend {
     if (o.cursor) {
       enc.clearBuffer(this.linkStats);
       const cp = enc.beginComputePass();
-      cp.setPipeline(this.pPick); cp.setBindGroup(0, this.bPick); cp.dispatchWorkgroups(Math.ceil(sim.n / 64));
+      cp.setPipeline(this.pPick); cp.setBindGroup(0, this.bPick); cp.dispatchWorkgroups(...groups64(sim.n));
       cp.end();
     } else enc.clearBuffer(this.linkStats);
 
@@ -572,12 +587,36 @@ class GpuBackend {
     }
 
     // tone map + sky/floor to the canvas
-    const target = this.ctx.offscreen ? this.offTex.createView() : this.ctx.getCurrentTexture().createView();
-    const tp = enc.beginRenderPass({ colorAttachments: [{ view: target, loadOp: 'clear', clearValue: [0, 0, 0, 1], storeOp: 'store' }] });
+    const outTex = this.ctx.offscreen ? this.offTex : this.ctx.getCurrentTexture();
+    const tp = enc.beginRenderPass({ colorAttachments: [{ view: outTex.createView(), loadOp: 'clear', clearValue: [0, 0, 0, 1], storeOp: 'store' }] });
     tp.setPipeline(this.pTone); tp.setBindGroup(0, this.bTone0); tp.setBindGroup(1, this.bTone1); tp.draw(3); tp.end();
+    const probe = this.probe;
+    if (probe) {
+      this.probe = null;
+      const s = Math.min(128, outTex.width, outTex.height);
+      enc.copyTextureToBuffer({ texture: outTex, origin: [(outTex.width - s) >> 1, (outTex.height - s) >> 1] }, { buffer: probe.buf, bytesPerRow: 512 }, [s, s]);
+    }
 
     const slot = sim.readback(enc);
     d.queue.submit([enc.finish()]);
     sim.afterSubmit(slot);
+    if (probe) probe.buf.mapAsync(GPUMapMode.READ).then(() => {
+      const px = new Uint8Array(probe.buf.getMappedRange());
+      let lit = 0;
+      for (let i = 0; i < px.length; i += 4) if (Math.max(px[i], px[i + 1], px[i + 2]) > 100) lit++;
+      probe.buf.destroy(); probe.done(lit > 0);
+    }, () => probe.done(false));
+  }
+
+  // Did the pipeline actually put particles on screen? Some WebGPU implementations accept every
+  // call and still present black. Resolves true / false, or null if no frame was drawn in time
+  // (hidden tab), which the caller must not treat as a failure.
+  selfCheck() {
+    if (this.gpuErrors || this.lost) return Promise.resolve(false);
+    return new Promise((done) => {
+      const timer = setTimeout(() => { this.probe = null; done(null); }, 3000);
+      this.probe = { buf: this.device.createBuffer({ size: 512 * 128, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ }),
+        done: (ok) => { clearTimeout(timer); done(ok && !this.gpuErrors); } };
+    });
   }
 }

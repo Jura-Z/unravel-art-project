@@ -1,10 +1,11 @@
 // Renders the WebGPU path offscreen (headless can't present a WebGPU canvas) and saves a PNG.
 import pw from 'playwright';
-const b = await pw.chromium.launch({ headless: true, ...(process.env.CHROME_PATH ? { executablePath: process.env.CHROME_PATH } : {}), args: ['--enable-unsafe-webgpu', '--use-webgpu-adapter=swiftshader', '--enable-features=Vulkan'] });
+import { launch, root } from './browser.mjs';
+const b = await launch();
 const p = await b.newPage({ viewport: { width: 800, height: 500 } });
 p.on('console', (m) => { if (m.type() === 'error') console.log('console:', m.text().slice(0, 300)); });
 await p.addInitScript(() => { window.__GPU_OFFSCREEN = true; window.requestAnimationFrame = (cb) => { window.__tick = cb; return 1; }; });
-await p.goto('file://' + process.cwd() + '/dist/pages/webgpu.html');
+await p.goto(root + '/dist/pages/webgpu.html');
 await p.waitForFunction(() => window.__engine, null, { timeout: 60000, polling: 200 });
 await p.evaluate(async () => { const E = window.__engine; E.mode.countIndex = 0; E.reset(); });
 const steps = +(process.env.FRAMES || 150);

@@ -58,17 +58,17 @@ const UnravelMode = {
   palette: UNRAVEL_PALETTES[0].stops,
   sky: { low: '#100f22', high: '#040509', floor: '#23203f' },
   floor: { y: -1.3, reflGain: 0.7, reflFall: 0.9 },   // y follows the shape's lowest point
-  decay: 0.66, exposure: 1.3, pointSize: 1.0, gain: 0.03, refCount: 300000, grain: 0.028,
+  decay: 0.66, exposure: 1.3, pointSize: 1.7, gain: 0.03, refCount: 300000, grain: 0.028,   // pointSize > 1.6: WebGPU draws soft quads, not 1-px points
   lineGain: 0.35,
-  counts: [100000, 150000, 200000, 300000, 600000, 1200000, 2400000], countIndex: 1,
+  counts: [100000, 150000, 200000, 300000, 600000, 1200000, 2400000, 4800000], countIndex: 1,
   camera: { yaw: 0.5, pitch: 0.26, dist: 4.3, target: [0, -0.45, 0] },
   minPitch: 0.03,
   autoRotate: 0.06,
 
-  sys: 0,
+  sys: 3,               // start on Aizawa
   paletteIndex: 0,
   shapeCycle: true,      // morph to the next attractor every SHAPE_PERIOD seconds
-  turb: 0.35,
+  turb: 0,
   linksOn: true,
   trails: true,
   // HDR, bloom (where float render targets exist) and colour cycling are always on.
@@ -156,7 +156,7 @@ const UnravelMode = {
     this.morphLeft = MORPH_EASE + MORPH_SPREAD + 0.2;
     if (this.E) { this.E.renderOptions(); this.E.toast(ATTRACTORS[i].name); }
   },
-  init(E, n) {
+  init(E, n, quiet) {
     this.E = E;
     if (!E.renderer.bloomSupported) this.bloom.on = false;
     this.count = n;
@@ -189,7 +189,22 @@ const UnravelMode = {
     this.burst = null;
     this._c = new Float64Array(3);
     this.setupLinks();
-    this.reset();
+    this.reset(false, quiet);
+  },
+
+  // Particle-count change without a restart: on WebGPU every running particle keeps its state and
+  // only the new tail is seeded, tight on the orbit. CPU backends re-seed quietly instead.
+  resize(E, n) {
+    if (this.backend !== 'gpu') return this.init(E, n, true);
+    const n0 = this.count, heal = new Float32Array(n);
+    heal.set(this.heal.subarray(0, Math.min(n0, n)));
+    for (let i = n0; i < n; i++) heal[i] = 0.16 + Math.random() * 0.14;
+    this.count = n; this.heal = heal;
+    this.sim = E.renderer.createSim(n, true);
+    if (n > n0) {
+      this.sim.writeHeal(heal, n0);
+      this.sim.seed(orbitFor(this.sys), ATTRACTORS[this.sys].spread * 0.018, this.seedSalt | 0, n0);
+    }
   },
 
   setupLinks() {
@@ -214,7 +229,7 @@ const UnravelMode = {
     this.target[k1] = lo1 + v * (hi1 - lo1);
   },
 
-  reset(morph) {
+  reset(morph, quiet) {
     const A = ATTRACTORS[this.sys];
     this.params = Object.assign({}, A.def);
     this.target = Object.assign({}, A.def);
@@ -224,7 +239,7 @@ const UnravelMode = {
     // jitter. WebGPU does the fill in a compute pass, so a shape change uploads nothing
     // (this keeps a morph at 2.4M particles to ~14 ms of JS).
     const S = this.S, n = this.count, orb = orbitFor(this.sys), L = ORBIT_LEN;
-    const jit = A.spread * 0.18, salt = this.seedSalt = ((this.seedSalt | 0) + 1) & 0xffff;
+    const jit = A.spread * (quiet ? 0.018 : 0.18), salt = this.seedSalt = ((this.seedSalt | 0) + 1) & 0xffff;
     const gpu = this.backend === 'gpu';
     if (!gpu) {
       for (let i = 0; i < n; i++) {
@@ -316,8 +331,7 @@ const UnravelMode = {
   demoDist(t) { return 4.3 + 1.6 * Math.sin(t * 0.21 - 0.4) + 0.5 * Math.sin(t * 0.083); },
 
   demo(t) {
-    if (t < 1.6) return null;                                   // shape comes into focus
-    const c = (t - 1.6) % 17;
+    const c = t % 17;
     if (c < 1.8) {                                              // tear a strip across the middle
       const s = c / 1.8;
       return { u: 0.3 + 0.42 * s, v: 0.42 + 0.08 * Math.sin(s * 3.3), down: c > 0.1 };
@@ -332,11 +346,11 @@ const UnravelMode = {
     if (c < 10.7) return { padU: this.defPad(0), padV: this.defPad(1) };
     if (c < 14) {                                               // turbulence swell
       const s = (c - 10.7) / 3.3;
-      return { turb: 0.35 + 0.55 * Math.sin(s * Math.PI) };
+      return { turb: 0.9 * Math.sin(s * Math.PI) };
     }
     if (c < 15.5) {                                             // a second, diagonal tear
       const s = (c - 14) / 1.5;
-      return { u: 0.62 - 0.3 * s, v: 0.28 + 0.4 * s, down: c > 14.1, turb: 0.35 };
+      return { u: 0.62 - 0.3 * s, v: 0.28 + 0.4 * s, down: c > 14.1, turb: 0 };
     }
     return null;
   },

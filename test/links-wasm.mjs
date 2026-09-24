@@ -1,10 +1,11 @@
 import pw from 'playwright';
-const b = await pw.chromium.launch({ args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'] });
+import { launch, root } from './browser.mjs';
+const b = await launch();
 for (const page of ['wasm-webgl', 'js-webgl']) {
   const p = await b.newPage({ viewport: { width: 1280, height: 800 } });
   p.on('pageerror', (e) => console.log('pageerror', e.message));
   await p.addInitScript(() => { window.requestAnimationFrame = (cb) => { window.__tick = cb; return 1; }; });
-  await p.goto('file://' + process.cwd() + `/dist/pages/${page}.html`);
+  await p.goto(root + `/dist/pages/${page}.html`);
   await p.waitForFunction(() => window.__engine && window.__tick, null, { timeout: 60000, polling: 200 });
   const r = await p.evaluate(() => {
     const E = window.__engine, m = E.mode; E.auto = null; E.demoActive = false; E.lastUserInput = 1e12;

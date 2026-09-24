@@ -15,11 +15,12 @@ const b64 = (p) => readFileSync(p).toString('base64');
 const data = {
   meta: { n, frames, shape, checks: ref.checks, jsRefMs: ref.jsRefMs, initSum },
   trace: b64(join(cache, `trace-${tag}.bin`)),
-  wasm: { scalar: b64(join(root, 'build', 'scalar.wasm')), simd: b64(join(root, 'build', 'simd.wasm')) },
+  wasm: { scalar: b64(join(root, 'build', 'scalar.wasm')), simd: b64(join(root, 'build', 'simd.wasm')), simdMt: b64(join(root, 'build', 'simd-mt.wasm')) },
   node: results.rows.map((r) => ({ name: r.name, mean: r.mean, exact: r.exact })),
 };
 writeFileSync(join(here, 'bundle-data.js'), `export const BUNDLE = ${JSON.stringify(data)};\n`);
-const js = execFileSync('esbuild', [join(here, 'page.js'), '--bundle', '--format=iife', '--minify-syntax', '--loader:.wgsl=text', '--target=es2022'], { encoding: 'utf8', maxBuffer: 64 << 20 });
+// esbuild's JS launcher via node: `execFileSync('esbuild')` can't run the .cmd shim on Windows
+const js = execFileSync(process.execPath, [join(root, '..', 'node_modules', 'esbuild', 'bin', 'esbuild'), join(here, 'page.js'), '--bundle', '--format=iife', '--minify-syntax', '--loader:.wgsl=text', '--target=es2022'], { encoding: 'utf8', maxBuffer: 64 << 20 });
 const shell = readFileSync(join(here, 'shell.html'), 'utf8');
 const nodeRows = `<script>
 (function(){const rows=${JSON.stringify(data.node)};const ref=${JSON.stringify(ref.jsRefMs || null)};

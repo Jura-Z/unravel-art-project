@@ -3,13 +3,16 @@
 // sets FORCED_BACKEND). Each attempt gets a fresh canvas, because a canvas that has
 // handed out a WebGPU context can never give a WebGL one.
 const BACKENDS = {
-  'webgpu': { label: 'WebGPU compute · WebGPU render', sim: 'gpu', defaultCount: 4,
+  'webgpu': { label: 'WebGPU compute · WebGPU render', sim: 'gpu', defaultCount: 5,
     async make(canvas) { return GpuBackend.create(canvas); } },
-  'wasm-webgl': { label: 'WASM SIMD sim · WebGL2 render', sim: 'wasm', defaultCount: 1,
+  'wasm-webgl': { label: () => WASM_MT_MODULE ? `WASM SIMD sim ×${WASM_THREADS} threads · WebGL2 render` : 'WASM SIMD sim · WebGL2 render',
+    sim: 'wasm', defaultCount: () => (WASM_MT_MODULE ? 3 : 1),
     async make(canvas) { await compileWasmKernel(); return new Renderer(canvas); } },
   'js-webgl': { label: 'JS sim · WebGL2 render', sim: 'js', defaultCount: 1,
     async make(canvas) { return new Renderer(canvas); } },
 };
+
+const GPU_BAD_KEY = 'unravel-webgpu-bad';
 
 function freshCanvas() {
   const old = document.getElementById('stage');
@@ -21,20 +24,37 @@ function freshCanvas() {
 (async function boot() {
   const hash = (location.hash || '').slice(1);
   const want = BACKENDS[hash] ? hash : (typeof FORCED_BACKEND === 'string' && BACKENDS[FORCED_BACKEND] ? FORCED_BACKEND : 'auto');
-  const order = want === 'auto' ? ['webgpu', 'wasm-webgl', 'js-webgl'] : [want];
+  let gpuBad = null;
+  try { gpuBad = localStorage.getItem(GPU_BAD_KEY); } catch (e) {}
+  const auto = ['webgpu', 'wasm-webgl', 'js-webgl'].filter((n) => n !== 'webgpu' || gpuBad !== navigator.userAgent);
+  const order = want === 'auto' ? auto : [want];
   const failures = [];
   for (const name of order) {
     const b = BACKENDS[name];
     try {
       const canvas = freshCanvas();
       const renderer = await b.make(canvas);
-      UnravelMode.countIndex = b.defaultCount;
-      const engine = new Engine(UnravelMode, { canvas, renderer, simBackend: b.sim, label: b.label });
+      const opt = (v) => (typeof v === 'function' ? v() : v);
+      UnravelMode.countIndex = opt(b.defaultCount);
+      const engine = new Engine(UnravelMode, { canvas, renderer, simBackend: b.sim, label: opt(b.label) });
       engine.start();
       window.__engine = engine;
       markBackend(name, want, failures);
       // If the GPU goes away mid-session (driver reset, sleep), fall back instead of freezing.
-      if (name === 'webgpu' && want === 'auto') window.addEventListener('unravel-gpu-lost', () => { location.hash = '#wasm-webgl'; });
+      if (name === 'webgpu' && want === 'auto') {
+        window.addEventListener('unravel-gpu-lost', () => { location.hash = '#wasm-webgl'; });
+        // WebGPU that starts but renders nothing (seen on iOS): remember it for this browser
+        // version and come back on WASM + WebGL2.
+        const check = async (tries) => {
+          const ok = await renderer.selfCheck();
+          if (ok === false && tries > 0) return setTimeout(() => check(tries - 1), 700);
+          if (ok !== false) return;
+          console.warn('[unravel] WebGPU renders nothing here; falling back to WASM + WebGL2');
+          try { localStorage.setItem(GPU_BAD_KEY, navigator.userAgent); } catch (e) {}
+          location.reload();
+        };
+        setTimeout(() => check(2), 2500);
+      }
       return;
     } catch (err) {
       console.warn(`[unravel] ${name} unavailable:`, err);

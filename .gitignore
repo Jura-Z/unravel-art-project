@@ -5,5 +5,6 @@ bench/dist/
 bench/web/bundle-data.js
 bench/build/*
 !bench/build/simd.wasm
+!bench/build/simd-mt.wasm
 dist/
 .DS_Store
