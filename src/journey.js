@@ -115,7 +115,7 @@ function buildJourney() {
     </ul>
 
     <h3>How it was made</h3>
-    <p>One person and one AI, in short loops. I (Jura) set the direction and judged every result by eye. Claude, Anthropic's model, wrote the code and checked its own work with screenshots and numbers before showing me.</p>
+    <p>One person and one AI, in short loops. I set the direction and judged every result by eye. Claude, Anthropic's model, wrote the code and checked its own work with screenshots and numbers before showing me.</p>
     <ul>
       <li><strong>Critique before code.</strong> The first request was to critique the idea. Two of its claims were overstated; I pushed back, and it agreed and revised.</li>
       <li><strong>Four prototypes to calibrate taste,</strong> each built around one verb. I picked by feel: tearing, plus the attractor.</li>
