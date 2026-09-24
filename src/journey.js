@@ -87,7 +87,7 @@ function buildJourney() {
     ${scale}
     <ul>
       <li><strong>Threads stop scaling at about 9×.</strong> From a million particles up, each step streams hundreds of megabytes, and memory bandwidth, not the number of cores, sets the pace.</li>
-      <li><strong>The GPU is still 16–37× faster than all 32 threads,</strong> and the same kernel in WGSL stays under half a millisecond at 4 million particles. That's a fair fight now: a whole GPU against a whole CPU.</li>
+      <li><strong>The GPU is still roughly 10–35× faster than all 32 threads</strong> (its timings swing about 2× between runs; the chart shows the best), and the same kernel in WGSL stays under half a millisecond at 4 million particles. That's a fair fight now: a whole GPU against a whole CPU.</li>
       <li><strong>The bottleneck moved, so the renderer moved to WebGPU too.</strong> WebGL can't read WebGPU buffers, and copying particles back every frame would undo the win. Particles are born, moved and drawn without leaving the GPU. The CPU sends under a kilobyte of settings per frame.</li>
       <li><strong>Timing it needed a trick.</strong> Browsers round GPU timestamps to about 0.1 ms, so one frame read as zero. The benchmark times a batch of frames instead.</li>
       <li><strong>The GPU can't be bit-exact.</strong> WGSL allows looser division and fused multiply-adds. 98.8% of values match exactly after one frame, and the rest differ by a few millionths. Because the motion is chaotic, it is checked at frames 1 and 10.</li>
@@ -136,6 +136,7 @@ function buildJourney() {
 
     <h3>What runs on your machine</h3>
     <p>WebGPU when your browser has it, after a quick check that it really draws. Otherwise WebAssembly SIMD on every core with WebGL2, which is bit-exact and uploads straight from WebAssembly memory. Plain JavaScript is the last resort. The footer switches between them. Nothing allocates per frame on any path.</p>
+    ${typeof BENCH_PAGE === 'string' ? `<p><a href="${BENCH_PAGE}"><strong>Run the benchmark on your machine →</strong></a> The numbers above come from one 32-thread desktop. The benchmark replays the same recorded session in your browser, checks every CPU result bit for bit, and times it. It is a separate page (about 70 KB compressed), downloaded only if you open it.</p>` : ''}
     <p class="jfoot">The benchmark, the kernels (C, WGSL, JS), the recorded session and the checksums are in the source.</p>
   </article>`;
   document.body.appendChild(el);

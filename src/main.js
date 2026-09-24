@@ -35,7 +35,9 @@ function freshCanvas() {
       const canvas = freshCanvas();
       const renderer = await b.make(canvas);
       const opt = (v) => (typeof v === 'function' ? v() : v);
-      UnravelMode.countIndex = opt(b.defaultCount);
+      // iOS (iPadOS reports as a Mac with touch) starts at 600k on any backend; auto-count moves from there.
+      const ios = /iP(hone|ad|od)/.test(navigator.userAgent) || (/Macintosh/.test(navigator.userAgent) && navigator.maxTouchPoints > 1);
+      UnravelMode.countIndex = ios ? UnravelMode.counts.indexOf(600000) : opt(b.defaultCount);
       const engine = new Engine(UnravelMode, { canvas, renderer, simBackend: b.sim, label: opt(b.label) });
       engine.start();
       window.__engine = engine;

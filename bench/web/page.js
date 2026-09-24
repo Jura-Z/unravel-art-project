@@ -134,7 +134,7 @@ function makeRow(tb, id, label) {
 async function saveRun(record) {
   try {
     const db = await window.claude?.use?.('db');
-    if (!db) { $('saved').textContent = 'Results were not saved: this view has no database access.'; return; }
+    if (!db) return;                     // only claude.ai artifacts have a results log; elsewhere, say nothing
     await db.collection('runs').add(record);
     $('saved').textContent = `Saved to this page's results log (${new Date(record.at).toLocaleTimeString()}).`;
   } catch (e) {
@@ -204,8 +204,11 @@ async function runAll() {
             tr.querySelector('[data-k=ok]').innerHTML = `<span class="bad">${e.message}</span>`;
           }
         }
-        const w = entry['wasm-simd']?.mean, g = entry.webgpu?.gpuMs ?? entry.webgpu?.mean;
-        if (w && g) $(`scale-webgpu-${m}`).querySelector('[data-k=x]').textContent = `${(w / g).toFixed(0)}× vs WASM SIMD`;
+        // Compare the GPU with the best CPU that ran: every thread when they're available, else one.
+        const w1 = entry['wasm-simd']?.mean, wN = entry['wasm-simd-mt']?.mean, g = entry.webgpu?.gpuMs ?? entry.webgpu?.mean;
+        if (w1 && wN) $(`scale-wasm-simd-mt-${m}`).querySelector('[data-k=x]').textContent = `${(w1 / wN).toFixed(1)}× vs 1 thread`;
+        const w = wN || w1;
+        if (w && g) $(`scale-webgpu-${m}`).querySelector('[data-k=x]').textContent = `${(w / g).toFixed(0)}× vs WASM ${wN ? `${THREADS} threads` : '1 thread'}`;
         record.scale.push(entry);
       }
     }
@@ -246,11 +249,14 @@ function boot() {
     opts.appendChild(l);
   }
   const l = document.createElement('label');
-  l.innerHTML = `<input type="checkbox" id="use-scale" checked> scale test <small>(150k / 1M / 4M, ~1 min)</small>`;
+  // The 4M run holds several copies of the particle state; phones and small-memory devices can lose the tab.
+  const small = matchMedia('(pointer: coarse)').matches || (navigator.deviceMemory && navigator.deviceMemory < 8);
+  l.innerHTML = `<input type="checkbox" id="use-scale" ${small ? '' : 'checked'}> scale test <small>(150k / 1M / 4M, ~1 min${small ? '; off on phones: the 4M run needs a lot of memory' : ''})</small>`;
   opts.appendChild(l);
   $('mt').textContent = crossOriginIsolated
     ? `This page is cross-origin isolated: WASM runs on ${THREADS} threads here.`
     : 'WASM threads need a cross-origin-isolated page (COOP/COEP headers), which this host does not send. Thread results come from the Node runner (table below).';
+  if (!window.claude?.use) $('saved').textContent = '';   // no results log outside claude.ai artifacts
   $('run').addEventListener('click', runAll);
 }
 boot();

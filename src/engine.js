@@ -726,7 +726,7 @@ class Engine {
 
   changeCount(dir, auto) {
     const m = this.mode;
-    if (!auto && this.auto) this.auto.on = false;   // a manual choice always wins
+    if (!auto && this.auto) { this.auto.on = false; this.auto.watch = false; }   // a manual choice always wins
     const k = Math.max(0, Math.min(m.counts.length - 1, m.countIndex + dir));
     if (k === m.countIndex) return;
     m.countIndex = k;
@@ -743,7 +743,18 @@ class Engine {
   // that would obviously miss. Any manual −/+ turns this off.
   autoCount(rawMs, workMs) {
     const a = this.auto;
-    if (!a || !a.on) return;
+    if (!a) return;
+    if (!a.on) {
+      // After calibration: step down (never up) when frames stay slow, e.g. a phone heating up.
+      if (!a.watch || rawMs > 250 || document.hidden) return;
+      a.ms.push(rawMs);
+      if (a.ms.length < 90) return;
+      a.ms.sort((x, y) => x - y);
+      const slow = a.ms[a.ms.length >> 1] > Math.max(a.vsync, AUTO_MIN_FRAME_MS) * 1.3 + 0.5;
+      a.ms.length = 0;
+      if (slow && this.mode.countIndex > 0) { this.changeCount(-1, true); this.toast(`Auto: ${fmtCount(this.mode.count)} particles`); }
+      return;
+    }
     if (rawMs > 250 || document.hidden) { a.ms.length = 0; a.settle = 0.5; return; }   // tab switch, stall
     if (a.settle > 0) { a.settle -= rawMs / 1000; return; }
     a.ms.push(rawMs); a.work.push(workMs);
@@ -752,13 +763,14 @@ class Engine {
     const frame = a.ms[a.ms.length >> 1], work = a.work[a.work.length >> 1];
     // Refresh interval: the 10th percentile, so a count that is already dropping frames
     // (intervals alternating 1x / 2x refresh) can't pass itself off as the refresh rate.
-    a.vsync = Math.min(a.vsync, a.ms[Math.floor(a.ms.length * 0.1)]);
+    // Capped at 60 Hz: a count that is slow on every frame would otherwise pass for the refresh rate.
+    a.vsync = Math.min(a.vsync, a.ms[Math.floor(a.ms.length * 0.1)], 1000 / 60);
     a.ms.length = 0; a.work.length = 0;
     // Aim for the display's refresh, but never above 120 fps: on a 240 Hz screen twice
     // the particles at 120 fps is the better picture.
     const target = Math.max(a.vsync, AUTO_MIN_FRAME_MS);
     const m = this.mode, i = m.countIndex;
-    const done = (msg) => { a.on = false; if (msg) this.toast(msg); };
+    const done = (msg) => { a.on = false; a.watch = true; if (msg) this.toast(msg); };
     if (frame > target * 1.2 + 0.5) {                     // missing frames at this count
       if (a.last === 1 && i > 0) { this.changeCount(-1, true); return done(`Auto: ${fmtCount(m.counts[m.countIndex])} particles`); }
       if (i > 0 && a.steps < 3) { a.steps++; a.last = -1; this.changeCount(-1, true); a.settle = 0.35; return; }
